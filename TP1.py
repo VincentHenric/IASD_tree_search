@@ -135,6 +135,13 @@ class Board:
                 print('Player {} moves from {} to {}'.format(self.colors[player], init, target))
                 print(self)
         return self
+    
+    def play_moves(self, player, moves, with_comment=False):
+        board = copy.deepcopy(self)
+        for move in moves:
+            board.play_move(player, move, with_comment)
+            player = - player
+        return board
         
     def check_win(self):
         for player in self.players:
@@ -346,73 +353,100 @@ class UCBMonteCarloPolicy(Policy):
 
 
 """ ===================================================================== """ 
-  
-
-class MCTS(Policy):
-    def __init__(self, budget, default_policy, tree_policy, back_up, best_child_func):
-        self.budget = budget
-        self.default_policy = default_policy
-        self.tree_policy = tree_policy
-        self.back_up = back_up
-        self.best_child_func = best_child_func
-        self.tree = Tree()
-        
-    def play(self, player, board):        
-        t = 0
-        while t < self.budget:
-            new_board, moves = self.tree_policy(self.tree, player, board)
-            win_value, moves_playout = self.play_default_policy(new_board, player)
-            self.back_up(self.tree, win_value, moves)
-            t += 1
-        return self.tree.best_child(self.best_child_func)
-            
-    def play_default_policy(self, board, player):
-        play = Play(board=copy.copy(board)) # create a fictitious game from the board state
-        
-        win_player = play.play(self.default_policy, copy.copy(self.default_policy))
-        win = win_player * player
-        return win, play.history
-    
+ 
 class Tree:
     def __init__(self, default_value):
         self.tree = dict()
         self.default_value = default_value
         
-    def add_node(self, move):
-        if str(move) not in self.tree.keys():
-            self.tree[str(move)] = self.default_value
+    def add_node(self, h):
+        if h not in self.tree.keys():
+            self.tree[h] = self.default_value
         
     def best_child(self, value_func):
-        return max(self.tree.items(), key=value_func(operator.itemgetter(1)))[0]
+        return max(self.tree.items(), key=lambda v: value_func(v[1]))[0] 
     
-class FlatMonteCarlo:
-    @staticmethod
+    def __getitem__(self, i):
+        return self.tree[i]
+    
+    def __setitem__(self, k, v):
+        self.tree[k] = v
+        
+    def __repr__(self):
+        return self.__str__()
+    
+    def __str__(self):
+        return str(self.tree)
+
+class MCTS(Policy):
+    def __init__(self, budget, default_policy):
+        self.budget = budget
+        self.default_policy = default_policy
+        self.tree = Tree((0,0))
+        
+    def play(self, player, board):        
+        t = 0
+        while t < self.budget:
+            new_board, hmoves = self.tree_policy(player, board)
+            win_value, moves_playout = self.play_default_policy(new_board, player)
+            self.back_up(win_value, hmoves)
+            t += 1
+        best_hmove = self.tree.best_child(self.best_child_func)
+        return self.get_next_move(board, player, best_hmove)
+            
+    def play_default_policy(self, board, player):
+        play = Play(board=copy.deepcopy(board)) # create a fictitious game from the board state
+        
+        win_player = play.play(self.default_policy, copy.deepcopy(self.default_policy))
+        win = win_player * player
+        return max(0,win), play.history
+    
+    def get_next_move(self, board, player, best_hmove):
+        possible_moves = board.possible_moves(player)
+        for move in possible_moves:
+            h = board.get_move_hash(move, player)
+            if h==best_hmove:
+                return move
+    
     def tree_policy(tree, player, board):
+        pass
+    
+    def back_up(tree, win_value, moves):
+        pass
+    
+    def best_child_func(value_func):
+        pass
+    
+class FlatMonteCarlo(MCTS):
+    def __init__(self, budget, default_policy):
+        super().__init__(budget, default_policy)
+        self.tree = Tree((0,0)) #nb win, nb plays
+        
+    def tree_policy(self, player, board):
         # we try all nodes the same nb of times
         # returns the new board as we descend the tree, and updates the tree 
-        moves = []
+        hmoves = []
         board = copy.deepcopy(board)
         
         possible_moves = board.possible_moves(player)
         k = np.random.randint(len(possible_moves))
-        move = moves[k]
-        tree.add_node(move)
+        move = possible_moves[k]
+        
+        hmove = board.get_move_hash(move, player)
+        self.tree.add_node(hmove)
+        hmoves.append(hmove)
+        board.play_move(player, move)
+        return board, hmoves
     
-    @staticmethod
-    def back_up(tree, win_value, moves):
-        if len(moves) != 0:
-            move = moves.pop()
-            child_tree, value = tree[move]
-            win_value = value[0] + win_value
-            n = value[1] + 1
-            tree[move] = (child_tree, (win_value, n))
-            return FlatMonteCarlo.back_up(child_tree, win_value, moves)
-        else:
-            pass
-    
-    @staticmethod        
-    def best_child_func(t):
-        win,n = t
+    def back_up(self, win_value, hmoves):
+        for hmove in hmoves:
+            win, n = self.tree[hmove]
+            win_value = win + win_value
+            n = n + 1
+            self.tree[hmove] = (win_value, n)
+         
+    def best_child_func(self, v):
+        win,n = v
         return win/n  
     
     
@@ -457,7 +491,8 @@ if __name__ == '__main__':
         play = Play(5, ['x', 'o'], True)
         
         #policy1 = randomPolicy()
-        policy1 = UCBMonteCarloPolicy(100, randomPolicy())
+        #policy1 = UCBMonteCarloPolicy(100, randomPolicy())
+        policy1 = FlatMonteCarlo(100, randomPolicy())
         policy2 = randomPolicy()
         
         a = play.play(policy1, policy2, interactive=True, sleep=0.1)
@@ -465,9 +500,9 @@ if __name__ == '__main__':
     
     if flag_series_games:
         #policy1 = randomPolicy()
-        policy1 = UCBMonteCarloPolicy(100, randomPolicy())
-        #policy2 = randomPolicy()
-        policy2 = FlatMonteCarloPolicy(100, randomPolicy())
+        #policy1 = UCBMonteCarloPolicy(100, randomPolicy())
+        policy2 = randomPolicy()
+        #policy2 = FlatMonteCarloPolicy(100, randomPolicy())
     
         plays = Plays(policy1, policy2, n=5, colors=['x', 'o'])
         plays.play(30, True)
