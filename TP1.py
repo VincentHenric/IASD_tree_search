@@ -19,34 +19,38 @@ PLAYERS = [1, -1]
 class Board:
     def __init__(self, n, colors = [1, -1]):
         self.size = n
-        self.players = PLAYERS
+        
+        # player and color configuration
+        self.players_list = PLAYERS
         self.empty = ''
         if isinstance(colors, dict):
             self.colors = colors
         else:
             colors = [str(c) for c in colors]
-            self.colors = dict(zip(self.players, colors))
+            self.colors = dict(zip(self.players_list, colors))
         self.col_to_player = {col:player for player,col in self.colors.items()}
         self.color_len = max([len(c) for c in self.colors.values()])
+        self.players = itertools.cycle(self.players_list)
+        self.next_player()
         
+        # initialize board
         self.board = np.zeros((n,n), dtype='<U{}'.format(self.color_len))
-        self.initialize()
-        
-        #self.check_player_position(1)
-        #self.check_player_position(-1)
-    
-    def initialize(self):
         self.board[:2,:]=self.colors[1]
         self.board[-2:,:]=self.colors[-1]
         
+        # initialize hash
         self.zobrist = Zobrist_hash(self.size)
-        self.h = self.zobrist.board_hash(self)
+        self.h = self.hash()
         
     def hash(self):
         return self.zobrist.board_hash(self)
     
-    def get_move_hash(self, move, player):
-        return self.zobrist.move_hash(self.h, move, player)
+    def next_player(self):
+        self.current_player = next(self.players)
+        return self.current_player
+    
+    def get_move_hash(self, move):
+        return self.zobrist.move_hash(self.h, move, self.current_player)
         
     def __getitem__(self, key):
         return self.board[key]
@@ -87,7 +91,7 @@ class Board:
             s += row + '\n'
         return s
     
-    def check_player_position(self, player):
+    def _check_player_position(self, player):
         positions = []
         for i in range(len(self.board)):
             for j in range(len(self.board)):
@@ -95,36 +99,39 @@ class Board:
                     positions.append((i,j))
         return positions
         
-    def possible_moves(self, player):
+    def possible_moves(self):
+        player = self.current_player
         possibles_moves = []
-        positions = self.check_player_position(player)
+        positions = self._check_player_position(player)
         
         for position in positions:
-            possibles_moves += self.possible_move(position, player)
+            possibles_moves += self._possible_move(position, player)
             
         return possibles_moves
     
-    def check_move(self, i, j):
+    def move_in_board(self, i, j):
         return i>=0 and i<len(self.board) and j>=0 and j<len(self.board)
     
-    def possible_move(self, position, player):
+    def _possible_move(self, position, player):
         i,j = position
         moves = []
-        if self.check_move(i + player, j) and self.board[i + player, j] == self.empty:
+        if self.move_in_board(i + player, j) and self.board[i + player, j] == self.empty:
             moves.append(((i,j),(i+player,j)))
             
-        if self.check_move(i + player, j-1) and  self.board[i + player, j-1] != self.colors[player]:
+        if self.move_in_board(i + player, j-1) and  self.board[i + player, j-1] != self.colors[player]:
             moves.append(((i,j),(i+player,j-1)))
 
-        if self.check_move(i + player, j+1) and  self.board[i + player, j+1] != self.colors[player]:
+        if self.move_in_board(i + player, j+1) and  self.board[i + player, j+1] != self.colors[player]:
             moves.append(((i,j),(i+player,j+1)))
 
         return moves
               
-    def play_move(self, player, move, with_comment=False):
+    def play_move(self, move, with_comment=False):
+        player = self.current_player
+        
         if move is None:
             if with_comment:
-                print('Player cannot play')
+                print('Player {} cannot play'.format(self.colors[player]))
         else:
             init, target = move
             self.board[target] = self.board[init]
@@ -134,17 +141,19 @@ class Board:
             if with_comment:
                 print('Player {} moves from {} to {}'.format(self.colors[player], init, target))
                 print(self)
+                
+            # change current player
+            self.next_player()
         return self
     
-    def play_moves(self, player, moves, with_comment=False):
+    def play_moves(self, moves, with_comment=False):
         board = copy.deepcopy(self)
         for move in moves:
-            board.play_move(player, move, with_comment)
-            player = - player
+            board.play_move(move, with_comment)
         return board
         
     def check_win(self):
-        for player in self.players:
+        for player in self.players_list:
             if self.colors[player] in self.board[min(-player,0)]:
                 return True
         return False
@@ -170,31 +179,31 @@ class Play:
             self.board=board
         else:
             self.board = Board(n, colors)
-        self.current_player = -1 # player 1 starts; see function play
         self.save = save
         self.history = Game_history()
     
-    def player_play(self, player, policy, interactive=False):
-        move = policy.play(player, self.board)
+    def player_play(self, policy, interactive=False):
+        move = policy.play(self.board)
         if self.save:
             self.history.update_move(move)
-        self.board.play_move(player, move, interactive)
+        self.board.play_move(move, interactive)
         
     def play(self, policy1, policy2, interactive=False, sleep=1):
         while not self.board.check_win():
-            self.current_player = - self.current_player
-            if self.current_player == 1:
+            current_player = self.board.current_player
+            if current_player == 1:
                 policy = policy1
             else:
                 policy = policy2
-            self.player_play(self.current_player, policy, interactive)
+            self.player_play(policy, interactive)
             
             if interactive:
                 time.sleep(sleep)
+        winning_player = self.board.next_player()
         if interactive:
-            print('Player {} wins !'.format(self.board.colors[self.current_player]))
-        self.history.update_win(self.current_player)
-        return self.current_player
+            print('Player {} wins !'.format(self.board.colors[winning_player]))
+        self.history.update_win(winning_player)
+        return winning_player
     
 class Plays:
     def __init__(self, policy1, policy2, n=5, colors=[1, -1]):
@@ -241,8 +250,8 @@ class randomPolicy(Policy):
     def __init__(self):
         pass
     
-    def play(self, player, board):
-        moves = board.possible_moves(player)
+    def play(self, board):
+        moves = board.possible_moves()
         if len(moves) == 0:
             return None
         i = np.random.randint(len(moves))
@@ -254,8 +263,8 @@ class FlatMonteCarloPolicy(Policy):
         self.default_policy = default_policy
         self.c = c
     
-    def play(self, player, board):
-        remaining_moves = itertools.cycle(board.possible_moves(player))
+    def play(self, board):
+        remaining_moves = itertools.cycle(board.possible_moves())
         stats = defaultdict(lambda: (0,0)) # key = the move; value = the statistics (nb wins, nb simu)
         t = 0
         
@@ -265,7 +274,7 @@ class FlatMonteCarloPolicy(Policy):
             move = next(remaining_moves)
             
             # playout
-            win = self.playout(player, move, board) 
+            win = self.playout(move, board) 
             
             # back up
             w,n = stats[move]
@@ -281,14 +290,13 @@ class FlatMonteCarloPolicy(Policy):
         move = max(wins.items(), key=operator.itemgetter(1))[0]
         return move
         
-    def playout(self, player, move, board):
+    def playout(self, move, board):
        # print('Start playout')
         play = Play(board=copy.deepcopy(board)) # create a fictitious game from the board state
-        play.current_player= player
-        play.board.play_move(player, move)
+        play.board.play_move(move)
         
         win_player = play.play(self.default_policy, copy.deepcopy(self.default_policy), interactive=False)
-        win = max(win_player * player, 0)
+        win = max(win_player * board.current_player, 0)
        # print('end playout')
         
         return win
@@ -300,8 +308,8 @@ class UCBMonteCarloPolicy(Policy):
         self.default_policy = default_policy
         self.c = c
     
-    def play(self, player, board):
-        remaining_moves = board.possible_moves(player)
+    def play(self, board):
+        remaining_moves = board.possible_moves()
         stats = defaultdict(lambda: (0,0)) # key = the move; value = the statistics (nb wins, nb simu)
         t = 0
         
@@ -314,7 +322,7 @@ class UCBMonteCarloPolicy(Policy):
                 move = self.choose_UTC_move(stats, t)
             
             # playout
-            win = self.playout(player, move, board) 
+            win = self.playout(move, board) 
             
             # back up
             w,n = stats[move]
@@ -338,14 +346,13 @@ class UCBMonteCarloPolicy(Policy):
         move = max(stats.items(), key=lambda x: x[1][1])[0]
         return move
         
-    def playout(self, player, move, board):
+    def playout(self, move, board):
        # print('Start playout')
         play = Play(board=copy.deepcopy(board)) # create a fictitious game from the board state
-        play.current_player= player
-        play.board.play_move(player, move)
+        play.board.play_move(move)
         
         win_player = play.play(self.default_policy, copy.deepcopy(self.default_policy), interactive=False)
-        win = max(win_player * player, 0)
+        win = max(win_player * board.current_player, 0)
        # print('end playout')
         
         return win
@@ -363,8 +370,10 @@ class Tree:
         if h not in self.tree.keys():
             self.tree[h] = self.default_value
         
-    def best_child(self, value_func):
-        return max(self.tree.items(), key=lambda v: value_func(v[1]))[0] 
+    def best_child(self, value_func, h, keys):
+        nb_win, nb_play = self.tree[h]
+        tree = {k:v for k,v in self.tree.items() if k in keys}
+        return max(tree.items(), key=lambda v: value_func(nb_win, nb_play, v[1]))[0] 
     
     def __getitem__(self, i):
         return self.tree[i]
@@ -384,15 +393,18 @@ class MCTS(Policy):
         self.default_policy = default_policy
         self.tree = Tree((0,0))
         
-    def play(self, player, board):        
+    def play(self, board):        
         t = 0
+        self.tree.add_node(board.h)
         while t < self.budget:
-            new_board, hmoves = self.tree_policy(player, board)
-            win_value, moves_playout = self.play_default_policy(new_board, player)
+            new_board, hmoves = self.tree_policy(board)
+            win_value, moves_playout = self.play_default_policy(new_board, board.current_player)
             self.back_up(win_value, hmoves)
             t += 1
-        best_hmove = self.tree.best_child(self.best_child_func)
-        return self.get_next_move(board, player, best_hmove)
+        possible_hmoves = [board.get_move_hash(move) for move in board.possible_moves()]
+        # best_hmove = self.best_child(self.tree, board.h, possible_hmoves)
+        best_hmove = self.tree.best_child(self.best_child_func, board.h, possible_hmoves)
+        return self.get_next_move(board, best_hmove)
             
     def play_default_policy(self, board, player):
         play = Play(board=copy.deepcopy(board)) # create a fictitious game from the board state
@@ -401,42 +413,15 @@ class MCTS(Policy):
         win = win_player * player
         return max(0,win), play.history
     
-    def get_next_move(self, board, player, best_hmove):
-        possible_moves = board.possible_moves(player)
+    def get_next_move(self, board, best_hmove):
+        possible_moves = board.possible_moves()
         for move in possible_moves:
-            h = board.get_move_hash(move, player)
+            h = board.get_move_hash(move)
             if h==best_hmove:
                 return move
     
     def tree_policy(tree, player, board):
         pass
-    
-    def back_up(tree, win_value, moves):
-        pass
-    
-    def best_child_func(value_func):
-        pass
-    
-class FlatMonteCarlo(MCTS):
-    def __init__(self, budget, default_policy):
-        super().__init__(budget, default_policy)
-        self.tree = Tree((0,0)) #nb win, nb plays
-        
-    def tree_policy(self, player, board):
-        # we try all nodes the same nb of times
-        # returns the new board as we descend the tree, and updates the tree 
-        hmoves = []
-        board = copy.deepcopy(board)
-        
-        possible_moves = board.possible_moves(player)
-        k = np.random.randint(len(possible_moves))
-        move = possible_moves[k]
-        
-        hmove = board.get_move_hash(move, player)
-        self.tree.add_node(hmove)
-        hmoves.append(hmove)
-        board.play_move(player, move)
-        return board, hmoves
     
     def back_up(self, win_value, hmoves):
         for hmove in hmoves:
@@ -444,10 +429,73 @@ class FlatMonteCarlo(MCTS):
             win_value = win + win_value
             n = n + 1
             self.tree[hmove] = (win_value, n)
+    
+    def best_child_func(nb_win, nb_play, child_v):
+        pass
+    
+class FlatMonteCarlo(MCTS):
+    def __init__(self, budget, default_policy):
+        super().__init__(budget, default_policy)
+        self.tree = Tree((0,0)) #nb win, nb plays
+        
+    def tree_policy(self, board):
+        # we try all nodes the same nb of times
+        # returns the new board as we descend the tree, and updates the tree 
+        hmoves = [board.h]
+        board = copy.deepcopy(board)
+        
+        possible_moves = board.possible_moves()
+        k = np.random.randint(len(possible_moves))
+        move = possible_moves[k]
+        
+        hmove = board.get_move_hash(move)
+        self.tree.add_node(hmove)
+        hmoves.append(hmove)
+        board.play_move(move)
+        return board, hmoves
          
-    def best_child_func(self, v):
-        win,n = v
+    def best_child_func(self, nb_win, nb_play, child_v):
+        win,n = child_v
+        if n == 0:
+            return 0
         return win/n  
+    
+
+class UCBMonteCarlo(MCTS):
+    def __init__(self, budget, default_policy, c=0.4):
+        super().__init__(budget, default_policy)
+        self.tree = Tree((0,0)) #nb win, nb plays
+        self.c = c
+        
+    def play(self, board):
+        self.remaining_moves = board.possible_moves()       
+        return super().play(board)
+        
+    def tree_policy(self, board):
+        hmoves = [board.h]
+        board = copy.deepcopy(board)
+        
+        if len(self.remaining_moves) != 0:
+            move = self.remaining_moves.pop()
+        else:
+            possible_moves = board.possible_moves()
+            possible_hmoves = [board.get_move_hash(move) for move in possible_moves]
+            hmove = self.tree.best_child(self.best_child_func, board.h, possible_hmoves)
+            move = self.get_next_move(board, hmove)
+        
+        hmove = board.get_move_hash(move)
+        self.tree.add_node(hmove)
+        hmoves.append(hmove)
+        board.play_move(move)
+        return board, hmoves
+         
+    def best_child_func(self, nb_win, nb_play, child_v):
+        win,n = child_v
+        if n==0:
+            return 0
+        return win/n + self.c * np.sqrt(np.log(nb_play)/n) 
+    
+
     
     
 """ ===================================================================== """ 
@@ -492,7 +540,9 @@ if __name__ == '__main__':
         
         #policy1 = randomPolicy()
         #policy1 = UCBMonteCarloPolicy(100, randomPolicy())
-        policy1 = FlatMonteCarlo(100, randomPolicy())
+        #policy1 = FlatMonteCarloPolicy(100, randomPolicy())
+        #policy1 = FlatMonteCarlo(100, randomPolicy())
+        policy1 = UCBMonteCarlo(100, randomPolicy())
         policy2 = randomPolicy()
         
         a = play.play(policy1, policy2, interactive=True, sleep=0.1)
@@ -501,6 +551,7 @@ if __name__ == '__main__':
     if flag_series_games:
         #policy1 = randomPolicy()
         #policy1 = UCBMonteCarloPolicy(100, randomPolicy())
+        policy1 = FlatMonteCarlo(100, randomPolicy())
         policy2 = randomPolicy()
         #policy2 = FlatMonteCarloPolicy(100, randomPolicy())
     
