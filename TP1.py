@@ -13,6 +13,7 @@ import operator
 import copy
 from collections import defaultdict
 import random
+import time
 
 PLAYERS = [1, -1]
 
@@ -362,18 +363,16 @@ class UCBMonteCarloPolicy(Policy):
 """ ===================================================================== """ 
  
 class Tree:
-    def __init__(self, default_value):
+    def __init__(self):
         self.tree = dict()
-        self.default_value = default_value
         
     def add_node(self, h):
         if h not in self.tree.keys():
-            self.tree[h] = self.default_value
+            self.tree[h] = {'nb_win':0, 'nb_played':0, 'moves':[]}
         
     def best_child(self, value_func, h, keys):
-        nb_win, nb_play = self.tree[h]
         tree = {k:v for k,v in self.tree.items() if k in keys}
-        return max(tree.items(), key=lambda v: value_func(nb_win, nb_play, v[1]))[0] 
+        return max(tree.items(), key=lambda v: value_func(self.tree[h]['nb_win'], self.tree[h]['nb_played'], v[1]))[0] 
     
     def __getitem__(self, i):
         return self.tree[i]
@@ -386,20 +385,35 @@ class Tree:
     
     def __str__(self):
         return str(self.tree)
+    
+class Tree2(Tree):
+    def __init__(self):
+        super().__init__()
+        
+    def add_node(self, h):
+        if h not in self.tree.keys():
+            self.tree[h] = {'nb_win':0, 'nb_played':0, 'moves':dict()}
+            
+    def add_son(self, h, move):
+        self.tree[h]['moves'][move] = {'nb_win':0, 'nb_played':0}
+        
+    def best_child(self, value_func, h):
+        return max(self.tree[h]['moves'].items(), key=lambda v: value_func(self.tree[h]['nb_win'], self.tree[h]['nb_played'], v[1]))[0]
+    
 
 class MCTS(Policy):
     def __init__(self, budget, default_policy):
         self.budget = budget
         self.default_policy = default_policy
-        self.tree = Tree((0,0))
+        self.tree = Tree()
         
     def play(self, board):        
         t = 0
         self.tree.add_node(board.h)
         while t < self.budget:
-            new_board, hmoves = self.tree_policy(board)
+            new_board, hstates = self.tree_policy(board)
             win_value, moves_playout = self.play_default_policy(new_board, board.current_player)
-            self.back_up(win_value, hmoves)
+            self.back_up(win_value, hstates, moves_playout)
             t += 1
         possible_hmoves = [board.get_move_hash(move) for move in board.possible_moves()]
         # best_hmove = self.best_child(self.tree, board.h, possible_hmoves)
@@ -423,12 +437,10 @@ class MCTS(Policy):
     def tree_policy(tree, player, board):
         pass
     
-    def back_up(self, win_value, hmoves):
+    def back_up(self, win_value, hmoves, moves_playout):
         for hmove in hmoves:
-            win, nb = self.tree[hmove]
-            win = win + win_value
-            nb = nb + 1
-            self.tree[hmove] = (win, nb)
+            self.tree[hmove]['nb_win'] += win_value
+            self.tree[hmove]['nb_played'] += 1
     
     def best_child_func(nb_win, nb_play, child_v):
         pass
@@ -436,26 +448,26 @@ class MCTS(Policy):
 class FlatMonteCarlo(MCTS):
     def __init__(self, budget, default_policy):
         super().__init__(budget, default_policy)
-        self.tree = Tree((0,0)) #nb win, nb plays
+        self.tree = Tree() #nb win, nb plays
         
     def tree_policy(self, board):
         # we try all nodes the same nb of times
         # returns the new board as we descend the tree, and updates the tree 
-        hmoves = [board.h]
+        hstates = [board.h]
         board = copy.deepcopy(board)
         
         possible_moves = board.possible_moves()
         k = np.random.randint(len(possible_moves))
         move = possible_moves[k]
         
-        hmove = board.get_move_hash(move)
-        self.tree.add_node(hmove)
-        hmoves.append(hmove)
+        hstate = board.get_move_hash(move)
+        self.tree.add_node(hstate)
+        hstates.append(hstate)
         board.play_move(move)
-        return board, hmoves
+        return board, hstates
          
     def best_child_func(self, nb_win, nb_play, child_v):
-        win,n = child_v
+        win,n = child_v['nb_win'], child_v['nb_played']
         if n == 0:
             return 0
         return win/n  
@@ -464,7 +476,7 @@ class FlatMonteCarlo(MCTS):
 class UCBMonteCarlo(MCTS):
     def __init__(self, budget, default_policy, c=0.4):
         super().__init__(budget, default_policy)
-        self.tree = Tree((0,0)) #nb win, nb plays
+        self.tree = Tree() #nb win, nb plays
         self.c = c
         
     def play(self, board):
@@ -472,7 +484,7 @@ class UCBMonteCarlo(MCTS):
         return super().play(board)
         
     def tree_policy(self, board):
-        hmoves = [board.h]
+        hstates = [board.h]
         board = copy.deepcopy(board)
         
         if len(self.remaining_moves) != 0:
@@ -483,14 +495,14 @@ class UCBMonteCarlo(MCTS):
             hmove = self.tree.best_child(self.best_child_func, board.h, possible_hmoves)
             move = self.get_next_move(board, hmove)
         
-        hmove = board.get_move_hash(move)
-        self.tree.add_node(hmove)
-        hmoves.append(hmove)
+        hstate = board.get_move_hash(move)
+        self.tree.add_node(hstate)
+        hstates.append(hstate)
         board.play_move(move)
-        return board, hmoves
+        return board, hstates
          
     def best_child_func(self, nb_win, nb_play, child_v):
-        win,n = child_v
+        win,n = child_v['nb_win'], child_v['nb_played']
         if n==0:
             return 0
         return win/n + self.c * np.sqrt(np.log(nb_play)/n) 
@@ -499,7 +511,7 @@ class UCBMonteCarlo(MCTS):
 class UCTMonteCarlo(MCTS):
     def __init__(self, budget, default_policy, c=0.4):
         super().__init__(budget, default_policy)
-        self.tree = Tree((0,0)) #nb win, nb plays
+        self.tree = Tree() #nb win, nb plays
         self.c = c
         
     def tree_policy(self, board):
@@ -539,7 +551,215 @@ class UCTMonteCarlo(MCTS):
         return board, hmoves
          
     def best_child_func(self, nb_win, nb_play, child_v):
-        win,n = child_v
+        win,n = child_v['nb_win'], child_v['nb_played']
+        if n==0:
+            return 0
+        return win/n + self.c * np.sqrt(np.log(nb_play)/n) 
+    
+class UCTMonteCarlo2(MCTS):
+    def __init__(self, budget, default_policy, c=0.4):
+        super().__init__(budget, default_policy)
+        self.tree = Tree() #nb win, nb plays
+        self.c = c
+        
+    def play(self, board):        
+        t = 0
+        self.tree.add_node(board.h)
+        while t < self.budget:
+            new_board, tree_hstates, tree_moves = self.tree_policy(copy.deepcopy(board), [board.h],[])
+            win_value, moves_playout = self.play_default_policy(new_board, board.current_player)
+            self.back_up(win_value, tree_hstates, moves_playout)
+            #self.back_up(win_value, board, tree_moves, tree_hstates, moves_playout)
+            t += 1
+        possible_hmoves = [board.get_move_hash(move) for move in board.possible_moves()]
+        # best_hmove = self.best_child(self.tree, board.h, possible_hmoves)
+        best_hmove = self.tree.best_child(self.best_child_func, board.h, possible_hmoves)
+        return self.get_next_move(board, best_hmove)
+        
+    def tree_policy(self, board, hstates, moves):
+        possible_moves = board.possible_moves()
+        
+        if board.check_win():
+            return board, hstates, moves
+        elif len(self.tree[board.h]['moves'])!=len(possible_moves):
+            unexplored_moves = [move for move in possible_moves if move not in self.tree[board.h]['moves']]
+            k = np.random.randint(len(unexplored_moves))
+            move = unexplored_moves.pop(k)
+            hmove = board.get_move_hash(move)
+                        
+            self.tree.add_node(hmove)
+            self.tree[board.h]['moves'].append(move)
+            
+            hstates.append(hmove)
+            moves.append(move)
+            
+            board.play_move(move)
+            
+            return board, hstates, moves
+        else:
+            possible_hmoves = [board.get_move_hash(move) for move in possible_moves]
+            hmove = self.tree.best_child(self.best_child_func, board.h, possible_hmoves)
+            move = self.get_next_move(board, hmove)
+            
+            hstates.append(hmove)
+            moves.append(move)
+            
+            board.play_move(move)
+            
+            return self.tree_policy(board, hstates, moves)
+         
+    def best_child_func(self, nb_win, nb_play, child_v):
+        win,n = child_v['nb_win'], child_v['nb_played']
+        if n==0:
+            return 0
+        return win/n + self.c * np.sqrt(np.log(nb_play)/n) 
+
+
+class UCTMonteCarlo3(MCTS):
+    def __init__(self, budget, default_policy, c=0.4):
+        super().__init__(budget, default_policy)
+        self.tree = Tree2() #nb win, nb plays, moves map
+        self.c = c
+        
+    def play(self, board):        
+        t = 0
+        self.tree.add_node(board.h)
+        while t < self.budget:
+            new_board, tree_hstates, tree_moves = self.tree_policy(copy.deepcopy(board), [board.h],[])
+            win_value, moves_playout = self.play_default_policy(new_board, board.current_player)
+            self.back_up(win_value, tree_hstates, tree_moves, moves_playout)
+            t += 1
+        best_move = self.tree.best_child(self.best_child_func, board.h)
+        return best_move
+        
+    def tree_policy(self, board, hstates, moves):
+        possible_moves = board.possible_moves()
+        
+        if board.check_win():
+            return board, hstates, moves
+        elif len(self.tree[board.h]['moves'].keys())!=len(possible_moves):
+            unexplored_moves = [move for move in possible_moves if move not in self.tree[board.h]['moves'].keys()]
+            k = np.random.randint(len(unexplored_moves))
+            move = unexplored_moves.pop(k)
+            hmove = board.get_move_hash(move)
+                        
+            self.tree.add_node(hmove)
+            self.tree.add_son(board.h, move)
+            
+            hstates.append(hmove)
+            moves.append(move)
+            
+            board.play_move(move)
+            
+            return board, hstates, moves
+        else:
+            move = self.tree.best_child(self.best_child_func, board.h)
+            hmove = board.get_move_hash(move)
+            
+            hstates.append(hmove)
+            moves.append(move)
+            
+            board.play_move(move)
+            
+            return self.tree_policy(board, hstates, moves)
+        
+    def back_up(self, win_value, hmoves, tree_moves, moves_playout):
+        for i in range(len(hmoves)-1):
+            hmove = hmoves[i]
+            move = tree_moves[i]
+            self.tree[hmove]['nb_win'] += win_value
+            self.tree[hmove]['nb_played'] += 1
+            self.tree[hmove]['moves'][move]['nb_win'] += win_value
+            self.tree[hmove]['moves'][move]['nb_played'] += 1
+            
+        self.tree[hmoves[-1]]['nb_win'] += win_value
+        self.tree[hmoves[-1]]['nb_played'] += 1
+         
+    def best_child_func(self, nb_win, nb_play, child_v):
+        win,n = child_v['nb_win'], child_v['nb_played']
+        if n==0:
+            return 0
+        return win/n + self.c * np.sqrt(np.log(nb_play)/n) 
+    
+    
+class GraveMonteCarlo(MCTS):
+    def __init__(self, budget, default_policy, c=0.4):
+        super().__init__(budget, default_policy)
+        self.tree = Tree() #nb win, nb plays
+        self.c = c
+        
+    def play(self, board):        
+        t = 0
+        self.tree.add_node(board.h)
+        while t < self.budget:
+            new_board, tree_hstates, tree_moves = self.tree_policy(copy.deepcopy(board), [board.h],[])
+            win_value, moves_playout = self.play_default_policy(new_board, board.current_player)
+            self.back_up(win_value, tree_hstates, moves_playout)
+            #self.back_up(win_value, board, tree_moves, tree_hstates, moves_playout)
+            t += 1
+        possible_hmoves = [board.get_move_hash(move) for move in board.possible_moves()]
+        # best_hmove = self.best_child(self.tree, board.h, possible_hmoves)
+        best_hmove = self.tree.best_child(self.best_child_func, board.h, possible_hmoves)
+        return self.get_next_move(board, best_hmove)
+        
+    def tree_policy(self, board, hstates, moves):
+        possible_moves = board.possible_moves()
+        
+        if board.check_win():
+            return board, hstates, moves
+        elif len(self.tree[board.h]['moves'])!=len(possible_moves):
+            unexplored_moves = [move for move in possible_moves if move not in self.tree[board.h]['moves']]
+            k = np.random.randint(len(unexplored_moves))
+            move = unexplored_moves.pop(k)
+            hmove = board.get_move_hash(move)
+                        
+            self.tree.add_node(hmove)
+            self.tree[board.h]['moves'].append(move)
+            
+            hstates.append(hmove)
+            moves.append(move)
+            
+            board.play_move(move)
+            
+            return board, hstates, moves
+        else:
+            possible_hmoves = [board.get_move_hash(move) for move in possible_moves]
+            hmove = self.tree.best_child(self.best_child_func, board.h, possible_hmoves)
+            move = self.get_next_move(board, hmove)
+            
+            hstates.append(hmove)
+            moves.append(move)
+            
+            board.play_move(move)
+            
+            return self.tree_policy(board, hstates, moves)
+            
+    
+    def back_up(self, win_value, board, tree_moves, tree_hmoves, moves_playout):
+        playout_moves = moves_playout['moves']
+        all_moves = tree_moves + playout_moves
+
+        for t in range(tree_moves):
+            hmove = tree_hmoves[t]
+            
+            #board.zobrist.move_hash()
+            
+            win, nb, direct_actions = self.tree[hmove]
+            win = win + win_value
+            nb = nb + 1
+            
+            for u in range(t+1,len(all_moves)):
+                desc_move = all_moves[u]
+                #desc_hmove = all_hmoves[u]
+                a_win, a_nb = self.tree[hmove]['moves'][desc_move]
+                a_win += win
+                a_nb += 1
+                self.tree[hmove]['moves'][desc_move] = a_win, a_nb
+                
+            self.tree[hmove] = (win, nb, )
+         
+    def best_child_func(self, nb_win, nb_play, child_v):
+        win,n = child_v['nb_win'], child_v['nb_played']
         if n==0:
             return 0
         return win/n + self.c * np.sqrt(np.log(nb_play)/n) 
@@ -590,7 +810,8 @@ if __name__ == '__main__':
         #policy1 = FlatMonteCarloPolicy(100, randomPolicy())
         #policy1 = FlatMonteCarlo(100, randomPolicy())
         #policy1 = UCBMonteCarlo(100, randomPolicy())
-        policy1 = UCTMonteCarlo(100, randomPolicy())
+        policy1 = UCTMonteCarlo3(100, randomPolicy())
+        #policy1 = GraveMonteCarlo(100, randomPolicy())
         policy2 = randomPolicy()
         
         a = play.play(policy1, policy2, interactive=True, sleep=0.1)
